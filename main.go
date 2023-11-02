@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"compress/gzip"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -12,6 +11,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/spf13/cobra"
 )
 
 const lineCount uint64 = 61102
@@ -30,6 +31,7 @@ type Scanner struct {
 		outdir, outfile  string
 		include, exclude []string
 		verbose          bool
+		mode             string
 	}
 }
 
@@ -117,7 +119,9 @@ func (s *Scanner) ensureOut() error {
 
 func (s *Scanner) scanTableName() {
 	s.table = s.line[strings.IndexByte(s.line, '`')+1 : strings.LastIndexByte(s.line, '`')]
-	s.ignore = (s.cfg.include != nil && !slices.Contains(s.cfg.include, s.table)) || slices.Contains(s.cfg.exclude, s.table)
+	s.ignore = (s.cfg.include != nil && !slices.Contains(s.cfg.include, s.table)) || slices.Contains(s.cfg.exclude, s.table) ||
+		(s.typ == "data" && s.cfg.mode == "schema") ||
+		(s.typ == "schema" && s.cfg.mode == "data")
 }
 
 func (s *Scanner) isViewStart() bool {
@@ -184,29 +188,7 @@ func (s *Scanner) start() error {
 	return nil
 }
 
-func run() error {
-	var s Scanner
-
-	flag.StringVar(&s.cfg.outfile, "outfile", "", "Single file to output to. Pass - for stdout.")
-	flag.StringVar(&s.cfg.outdir, "outdir", "", "Directory to output files to.")
-	flag.BoolVar(&s.cfg.verbose, "verbose", false, "Output more info.")
-
-	exclude := flag.String("exclude", "", "Tables to exclude.")
-	include := flag.String("include", "", "Tables to include.")
-	flag.Parse()
-
-	if *exclude != "" {
-		s.cfg.exclude = strings.Split(*exclude, ",")
-	}
-	if *include != "" {
-		s.cfg.include = strings.Split(*include, ",")
-	}
-
-	fPath := flag.Arg(0)
-	if fPath == "" {
-		return fmt.Errorf("Please provide the path to the sql dump.")
-	}
-
+func run(s *Scanner, fPath string) error {
 	if (s.cfg.outfile == "") == (s.cfg.outdir == "") {
 		return fmt.Errorf("Provider either -outfile or -outdir.")
 	}
@@ -236,8 +218,33 @@ func run() error {
 }
 
 func main() {
-	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+	var s Scanner
+
+	cmd := cobra.Command{
+		Use:          "mysql-dump-splitter PATH_TO_DUMP",
+		Short:        "Split of process Mysql dumps",
+		Args:         cobra.ExactArgs(1),
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if ! slices.Contains([]string{"data", "schema", "both"}, s.cfg.mode) {
+				return fmt.Errorf("mode should be one of: data, schema or both")
+			}
+			return run(&s, args[0])
+		},
+	}
+
+	cmd.Flags().StringVarP(&s.cfg.outfile, "outfile", "f", "", "Single file to output to. Pass - for stdout.")
+	cmd.Flags().StringVarP(&s.cfg.outdir, "outdir", "d", "", "Directory to output files to.")
+	cmd.Flags().BoolVarP(&s.cfg.verbose, "verbose", "v", false, "Output more info.")
+	cmd.Flags().StringSliceVarP(&s.cfg.include, "include", "i", nil, "Tables to include.")
+	cmd.Flags().StringSliceVarP(&s.cfg.exclude, "exclude", "e", nil, "Tables to exclude.")
+
+	cmd.Flags().StringVarP(&s.cfg.mode, "mode", "m", "both", "Output mode: data/schema/both")
+
+	cmd.MarkFlagsOneRequired("outfile", "outdir")
+	cmd.MarkFlagsMutuallyExclusive("outfile", "outdir")
+
+	if err := cmd.Execute(); err != nil {
 		os.Exit(1)
 	}
 }

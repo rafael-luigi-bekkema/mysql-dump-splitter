@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -19,26 +20,47 @@ type Scanner struct {
 	rdr     *bufio.Scanner
 	count   uint64
 	line    string
-	outdir  string
-	dryRun  bool
 	created map[string]struct{}
 	file    *os.File
+	table   string
+	ignore  bool
+	typ     string
+
+	cfg struct {
+		outdir     string
+		singleFile string
+
+		include, exclude []string
+		dryRun           bool
+	}
 }
 
 func (s *Scanner) create(fName string) error {
+	if s.cfg.singleFile != "" {
+		if s.file == nil {
+			var err error
+			s.file, err = os.Create(s.cfg.singleFile)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
 	if s.file != nil {
 		s.file.Close()
 	}
 	if err := s.ensureOut(); err != nil {
 		return err
 	}
-	fName = filepath.Join(s.outdir, fName)
+	fName = filepath.Join(s.cfg.outdir, fName)
 	if _, ok := s.created[fName]; ok {
 		var err error
 		s.file, err = os.OpenFile(fName, os.O_APPEND|os.O_WRONLY, 0644)
 		if err != nil {
 			return err
 		}
+		return nil
 	}
 	if s.created == nil {
 		s.created = map[string]struct{}{}
@@ -50,6 +72,10 @@ func (s *Scanner) create(fName string) error {
 		return err
 	}
 	return nil
+}
+
+func (s *Scanner) writeLine() {
+	fmt.Fprint(s.file, s.line, "\r\n")
 }
 
 func (s *Scanner) Scan() bool {
@@ -72,62 +98,71 @@ func (s *Scanner) Next() bool {
 }
 
 func (s *Scanner) ensureOut() error {
-	fi, err := os.Stat(s.outdir)
+	fi, err := os.Stat(s.cfg.outdir)
 	if errors.Is(err, fs.ErrNotExist) {
-		if err := os.Mkdir(s.outdir, 0700); err != nil {
+		if err := os.Mkdir(s.cfg.outdir, 0700); err != nil {
 			return err
 		}
 		return nil
 	}
 	if !fi.IsDir() {
-		return fmt.Errorf("%s exists but is not a directory", s.outdir)
+		return fmt.Errorf("%s exists but is not a directory", s.cfg.outdir)
 	}
 	return nil
 }
 
+func (s *Scanner) scanTableName() {
+	s.table = s.line[strings.IndexByte(s.line, '`')+1 : strings.LastIndexByte(s.line, '`')]
+	s.ignore = (s.cfg.include != nil && !slices.Contains(s.cfg.include, s.table)) || slices.Contains(s.cfg.exclude, s.table)
+}
+
 func (s *Scanner) isViewStart() bool {
-	return strings.HasPrefix(s.line, "/*!50001 DROP VIEW")
+	v := strings.HasPrefix(s.line, "/*!50001 DROP VIEW")
+	if v {
+		s.typ = "view"
+	}
+	return v
 }
 
 func (s *Scanner) isSchemaStart() bool {
-	return strings.HasPrefix(s.line, "DROP TABLE")
+	v := strings.HasPrefix(s.line, "DROP TABLE")
+	if v {
+		s.typ = "schema"
+	}
+	return v
 }
 
 func (s *Scanner) isDataStart() bool {
-	return strings.HasPrefix(s.line, "LOCK TABLES")
+	v := strings.HasPrefix(s.line, "LOCK TABLES")
+	if v {
+		s.typ = "data"
+	}
+	return v
 }
 
 func (s *Scanner) start() error {
-	var table string
 	for s.Next() {
 		if s.line == "" || strings.HasPrefix(s.line, "--") {
 			continue
 		}
 
-		if s.isSchemaStart() {
-			table = s.line[strings.IndexByte(s.line, '`')+1 : strings.LastIndexByte(s.line, '`')]
-			fmt.Printf("Start schema for %q\n", table)
-			if err := s.create(table + "_schema.sql"); err != nil {
+		if s.isViewStart() || s.isSchemaStart() || s.isDataStart() {
+			s.scanTableName()
+
+			if s.ignore {
+				fmt.Printf("Ignoring %s for %q\n", s.typ, s.table)
+				continue
+			}
+
+			fmt.Printf("Start %s for %q\n", s.typ, s.table)
+			if err := s.create(s.table + ".sql"); err != nil {
 				return err
 			}
 		}
 
-		if s.isViewStart() {
-			table = s.line[strings.IndexByte(s.line, '`')+1 : strings.LastIndexByte(s.line, '`')]
-			fmt.Printf("Start view for %q\n", table)
-			if err := s.create(table + "_schema.sql"); err != nil {
-				return err
-			}
+		if !s.ignore {
+			s.writeLine()
 		}
-
-		if s.isDataStart() {
-			fmt.Printf("Start data for %q\n", table)
-			if err := s.create(table + "_data.sql"); err != nil {
-				return err
-			}
-		}
-
-		fmt.Fprint(s.file, s.line, "\r\n")
 	}
 
 	if s.file != nil {
@@ -144,9 +179,19 @@ func (s *Scanner) start() error {
 func run() error {
 	var s Scanner
 
-	flag.StringVar(&s.outdir, "out", "out", "Directory to output to. Defaults to 'out' in working directory.")
-	flag.BoolVar(&s.dryRun, "dry-run", false, "Don't output any files.")
+	flag.StringVar(&s.cfg.outdir, "out", "out", "Directory or file to output to. Defaults to 'out' in working directory.")
+	flag.BoolVar(&s.cfg.dryRun, "dry-run", false, "Don't output any files.")
+	flag.StringVar(&s.cfg.singleFile, "single-file", "", "Output to a single file.")
+	exclude := flag.String("exclude", "", "Tables to exclude")
+	include := flag.String("include", "", "Tables to include")
 	flag.Parse()
+
+	if *exclude != "" {
+		s.cfg.exclude = strings.Split(*exclude, ",")
+	}
+	if *include != "" {
+		s.cfg.include = strings.Split(*include, ",")
+	}
 
 	fPath := flag.Arg(0)
 

@@ -31,7 +31,6 @@ type Scanner struct {
 		singleFile string
 
 		include, exclude []string
-		dryRun           bool
 	}
 }
 
@@ -179,11 +178,10 @@ func (s *Scanner) start() error {
 func run() error {
 	var s Scanner
 
-	flag.StringVar(&s.cfg.outdir, "out", "out", "Directory or file to output to. Defaults to 'out' in working directory.")
-	flag.BoolVar(&s.cfg.dryRun, "dry-run", false, "Don't output any files.")
+	flag.StringVar(&s.cfg.outdir, "out", "out", "Directory or file to output to.")
 	flag.StringVar(&s.cfg.singleFile, "single-file", "", "Output to a single file.")
-	exclude := flag.String("exclude", "", "Tables to exclude")
-	include := flag.String("include", "", "Tables to include")
+	exclude := flag.String("exclude", "", "Tables to exclude.")
+	include := flag.String("include", "", "Tables to include.")
 	flag.Parse()
 
 	if *exclude != "" {

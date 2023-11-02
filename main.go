@@ -222,11 +222,11 @@ func main() {
 
 	cmd := cobra.Command{
 		Use:          "mysql-dump-splitter PATH_TO_DUMP",
-		Short:        "Split of process Mysql dumps",
+		Short:        "Split or process Mysql dumps.",
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if ! slices.Contains([]string{"data", "schema", "both"}, s.cfg.mode) {
+			if !slices.Contains([]string{"data", "schema", "both"}, s.cfg.mode) {
 				return fmt.Errorf("mode should be one of: data, schema or both")
 			}
 			return run(&s, args[0])

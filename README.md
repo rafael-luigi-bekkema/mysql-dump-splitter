@@ -5,13 +5,17 @@ Split huge mysql dumps per table, or create a new dump include/excluding tables.
 
 ## Usage
 ```
-Usage of mysql-dump-splitter:
-  -exclude string
-        Tables to exclude.
-  -include string
-        Tables to include.
-  -out string
-        Directory or file to output to. (default "out")
-  -single-file string
-        Output to a single file.
+Split or process Mysql dumps.
+
+Usage:
+  mysql-dump-splitter PATH_TO_DUMP [flags]
+
+Flags:
+  -e, --exclude strings   Tables to exclude.
+  -h, --help              help for mysql-dump-splitter
+  -i, --include strings   Tables to include.
+  -m, --mode string       Output mode: data/schema/both (default "both")
+  -d, --outdir string     Directory to output files to.
+  -f, --outfile string    Single file to output to. Pass - for stdout.
+  -v, --verbose           Output more info.
 ```

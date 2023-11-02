@@ -27,21 +27,26 @@ type Scanner struct {
 	typ     string
 
 	cfg struct {
-		outdir     string
-		singleFile string
-
+		outdir, outfile  string
 		include, exclude []string
+		verbose          bool
 	}
 }
 
 func (s *Scanner) create(fName string) error {
-	if s.cfg.singleFile != "" {
-		if s.file == nil {
-			var err error
-			s.file, err = os.Create(s.cfg.singleFile)
-			if err != nil {
-				return err
-			}
+	if s.cfg.outfile != "" {
+		if s.file != nil {
+			return nil
+		}
+
+		if s.cfg.outfile == "-" {
+			s.cfg.outfile = "/dev/stdout"
+		}
+
+		var err error
+		s.file, err = os.Create(s.cfg.outfile)
+		if err != nil {
+			return err
 		}
 		return nil
 	}
@@ -149,11 +154,16 @@ func (s *Scanner) start() error {
 			s.scanTableName()
 
 			if s.ignore {
-				fmt.Printf("Ignoring %s for %q\n", s.typ, s.table)
+				if s.cfg.verbose {
+					fmt.Fprintf(os.Stderr, "Ignoring %s for %q\n", s.typ, s.table)
+				}
 				continue
 			}
 
-			fmt.Printf("Start %s for %q\n", s.typ, s.table)
+			if s.cfg.verbose {
+				fmt.Fprintf(os.Stderr, "Start %s for %q\n", s.typ, s.table)
+			}
+
 			if err := s.create(s.table + ".sql"); err != nil {
 				return err
 			}
@@ -168,9 +178,8 @@ func (s *Scanner) start() error {
 		s.file.Close()
 	}
 
-	fmt.Println()
 	if err := s.rdr.Err(); err != nil {
-		fmt.Printf("At line %d\n%s\n", s.count+1, err)
+		return fmt.Errorf("At line %d\n%w\n", s.count+1, err)
 	}
 	return nil
 }
@@ -178,8 +187,10 @@ func (s *Scanner) start() error {
 func run() error {
 	var s Scanner
 
-	flag.StringVar(&s.cfg.outdir, "out", "out", "Directory or file to output to.")
-	flag.StringVar(&s.cfg.singleFile, "single-file", "", "Output to a single file.")
+	flag.StringVar(&s.cfg.outfile, "outfile", "", "Single file to output to. Pass - for stdout.")
+	flag.StringVar(&s.cfg.outdir, "outdir", "", "Directory to output files to.")
+	flag.BoolVar(&s.cfg.verbose, "verbose", false, "Output more info.")
+
 	exclude := flag.String("exclude", "", "Tables to exclude.")
 	include := flag.String("include", "", "Tables to include.")
 	flag.Parse()
@@ -192,9 +203,12 @@ func run() error {
 	}
 
 	fPath := flag.Arg(0)
-
 	if fPath == "" {
 		return fmt.Errorf("Please provide the path to the sql dump.")
+	}
+
+	if (s.cfg.outfile == "") == (s.cfg.outdir == "") {
+		return fmt.Errorf("Provider either -outfile or -outdir.")
 	}
 
 	f, err := os.Open(fPath)
@@ -223,7 +237,7 @@ func run() error {
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Printf("Error: %s\n", err)
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		os.Exit(1)
 	}
 }

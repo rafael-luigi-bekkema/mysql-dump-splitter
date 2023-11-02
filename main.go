@@ -16,31 +16,43 @@ import (
 const lineCount uint64 = 61102
 
 type Scanner struct {
-	rdr    *bufio.Scanner
-	count  uint64
-	line   string
-	outdir string
-	dryRun bool
-	skip   bool
+	rdr     *bufio.Scanner
+	count   uint64
+	line    string
+	outdir  string
+	dryRun  bool
 	created map[string]struct{}
+	file    *os.File
 }
 
-func (s *Scanner) create(fName string) (*os.File, error) {
+func (s *Scanner) create(fName string) error {
+	if s.file != nil {
+		s.file.Close()
+	}
+	if err := s.ensureOut(); err != nil {
+		return err
+	}
+	fName = filepath.Join(s.outdir, fName)
 	if _, ok := s.created[fName]; ok {
-		return os.OpenFile(fName, os.O_APPEND|os.O_WRONLY, 0644)
+		var err error
+		s.file, err = os.OpenFile(fName, os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			return err
+		}
 	}
 	if s.created == nil {
 		s.created = map[string]struct{}{}
 	}
 	s.created[fName] = struct{}{}
-	return os.Create(fName)
+	var err error
+	s.file, err = os.Create(fName)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Scanner) Scan() bool {
-	if s.skip {
-		s.skip = false
-		return true
-	}
 	if s.rdr.Scan() {
 		s.count++
 		s.line = s.rdr.Text()
@@ -73,103 +85,59 @@ func (s *Scanner) ensureOut() error {
 	return nil
 }
 
-func (s *Scanner) scanSchema(tbl string) error {
-	if s.dryRun {
-		for s.Next() {
-			if isSchemaEnd(s.line) {
-				break
-			}
-		}
-		return nil
-	}
-
-	if err := s.ensureOut(); err != nil {
-		return err
-	}
-	f, err := s.create(filepath.Join(s.outdir, tbl+"_schema.sql"))
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	fmt.Fprint(f, s.line, "\r\n")
-	for s.Next() {
-		if isSchemaEnd(s.line) {
-			break
-		}
-		fmt.Fprint(f, s.line, "\r\n")
-	}
-	return nil
+func (s *Scanner) isViewStart() bool {
+	return strings.HasPrefix(s.line, "/*!50001 DROP VIEW")
 }
 
-func (s *Scanner) scanTable(tbl string) error {
-	if isSchemaStart(s.line) {
-		s.skip = true
-		return nil
-	}
-
-	if s.dryRun {
-		for s.Next() {
-			if isSchemaStart(s.line) {
-				s.skip = true
-				break
-			}
-		}
-		return nil
-	}
-
-	if err := s.ensureOut(); err != nil {
-		return err
-	}
-	f, err := s.create(filepath.Join("out", tbl+".sql"))
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	fmt.Fprint(f, s.line, "\r\n")
-	for s.Next() {
-		if isSchemaStart(s.line) {
-			s.skip = true
-			break
-		}
-		fmt.Fprint(f, s.line, "\r\n")
-	}
-	return nil
+func (s *Scanner) isSchemaStart() bool {
+	return strings.HasPrefix(s.line, "DROP TABLE")
 }
 
-func isSchemaStart(line string) bool {
-	return strings.HasPrefix(line, "DROP TABLE") || strings.HasPrefix(line, "/*!50001 DROP VIEW")
-}
-
-func isSchemaEnd(line string) bool {
-	return isSchemaStart(line) || strings.HasPrefix(line, "LOCK TABLES") || strings.HasPrefix(line, "INSERT INTO")
+func (s *Scanner) isDataStart() bool {
+	return strings.HasPrefix(s.line, "LOCK TABLES")
 }
 
 func (s *Scanner) start() error {
+	var table string
 	for s.Next() {
 		if s.line == "" || strings.HasPrefix(s.line, "--") {
 			continue
 		}
-		if !isSchemaStart(s.line) {
-			continue
+
+		if s.isSchemaStart() {
+			table = s.line[strings.IndexByte(s.line, '`')+1 : strings.LastIndexByte(s.line, '`')]
+			fmt.Printf("Start schema for %q\n", table)
+			if err := s.create(table + "_schema.sql"); err != nil {
+				return err
+			}
 		}
 
-		tbl := s.line[strings.IndexByte(s.line, '`')+1 : strings.LastIndexByte(s.line, '`')]
-
-		fmt.Printf("Start output for %q\n", tbl)
-		if err := s.scanSchema(tbl); err != nil {
-			return err
-		}
-		if err := s.scanTable(tbl); err != nil {
-			return err
+		if s.isViewStart() {
+			table = s.line[strings.IndexByte(s.line, '`')+1 : strings.LastIndexByte(s.line, '`')]
+			fmt.Printf("Start view for %q\n", table)
+			if err := s.create(table + "_schema.sql"); err != nil {
+				return err
+			}
 		}
 
-		fmt.Printf("Finished output for %q\n", tbl)
+		if s.isDataStart() {
+			fmt.Printf("Start data for %q\n", table)
+			if err := s.create(table + "_data.sql"); err != nil {
+				return err
+			}
+		}
+
+		fmt.Fprint(s.file, s.line, "\r\n")
 	}
+
+	if s.file != nil {
+		s.file.Close()
+	}
+
 	fmt.Println()
 	if err := s.rdr.Err(); err != nil {
 		fmt.Printf("At line %d\n%s\n", s.count+1, err)
 	}
-	fmt.Printf("%d lines counted\n", s.count)
 	return nil
 }
 

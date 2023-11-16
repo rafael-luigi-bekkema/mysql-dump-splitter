@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"errors"
 	"fmt"
@@ -25,7 +26,10 @@ type Scanner struct {
 	file    *os.File
 	table   string
 	ignore  bool
+	skip    bool
 	typ     string
+
+	headers bytes.Buffer
 
 	cfg struct {
 		outdir, outfile  string
@@ -50,6 +54,9 @@ func (s *Scanner) create(fName string) error {
 		if err != nil {
 			return err
 		}
+
+		fmt.Fprintln(s.file, s.headers.String())
+
 		return nil
 	}
 
@@ -77,6 +84,8 @@ func (s *Scanner) create(fName string) error {
 	if err != nil {
 		return err
 	}
+
+	fmt.Fprintln(s.file, s.headers.String())
 	return nil
 }
 
@@ -94,6 +103,10 @@ func (s *Scanner) Scan() bool {
 }
 
 func (s *Scanner) Next() bool {
+	if s.skip {
+		s.skip = false
+		return true
+	}
 	for s.Scan() {
 		if s.line == "" || strings.HasPrefix(s.line, "--") {
 			continue
@@ -149,6 +162,14 @@ func (s *Scanner) isDataStart() bool {
 }
 
 func (s *Scanner) start() error {
+	for s.Next() {
+		if !strings.HasPrefix(s.line, "/*!") {
+			s.skip = true
+			break
+		}
+		fmt.Fprintln(&s.headers, s.line)
+	}
+
 	for s.Next() {
 		if s.line == "" || strings.HasPrefix(s.line, "--") {
 			continue

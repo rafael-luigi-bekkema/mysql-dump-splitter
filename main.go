@@ -16,32 +16,46 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const lineCount uint64 = 61102
-
 type Scanner struct {
-	rdr     *bufio.Scanner
-	count   uint64
-	line    string
-	created map[string]struct{}
-	file    *os.File
-	table   string
-	ignore  bool
-	skip    bool
-	typ     string
+	rdr      *bufio.Scanner
+	count    uint64
+	line     string
+	created  map[string]struct{}
+	out      io.Writer
+	outClose func()
+	table    string
+	ignore   bool
+	skip     bool
+	typ      string
 
 	headers bytes.Buffer
 
 	cfg struct {
-		outdir, outfile  string
-		include, exclude []string
-		verbose          bool
-		mode             string
+		outdir, outfile               string
+		include, exclude, excludeData []string
+		verbose                       bool
+		mode                          string
+		compress                      bool
+	}
+}
+
+func (s *Scanner) setFile(f *os.File) {
+	if s.cfg.compress {
+		gw := gzip.NewWriter(f)
+		s.out = gw
+		s.outClose = func() {
+			gw.Close()
+			f.Close()
+		}
+	} else {
+		s.out = f
+		s.outClose = func() { f.Close() }
 	}
 }
 
 func (s *Scanner) create(fName string) error {
 	if s.cfg.outfile != "" {
-		if s.file != nil {
+		if s.out != nil {
 			return nil
 		}
 
@@ -49,48 +63,54 @@ func (s *Scanner) create(fName string) error {
 			s.cfg.outfile = "/dev/stdout"
 		}
 
-		var err error
-		s.file, err = os.Create(s.cfg.outfile)
+		f, err := os.Create(s.cfg.outfile)
 		if err != nil {
 			return err
 		}
+		s.setFile(f)
 
-		fmt.Fprintln(s.file, s.headers.String())
+		fmt.Fprintln(s.out, s.headers.String())
 
 		return nil
 	}
 
-	if s.file != nil {
-		s.file.Close()
+	if s.out != nil {
+		s.outClose()
 	}
 	if err := s.ensureOut(); err != nil {
 		return err
 	}
+	if s.cfg.compress {
+		fName += ".gz"
+	}
 	fName = filepath.Join(s.cfg.outdir, fName)
 	if _, ok := s.created[fName]; ok {
-		var err error
-		s.file, err = os.OpenFile(fName, os.O_APPEND|os.O_WRONLY, 0644)
+		f, err := os.OpenFile(fName, os.O_APPEND|os.O_WRONLY, 0644)
 		if err != nil {
 			return err
 		}
+		s.setFile(f)
 		return nil
 	}
+
 	if s.created == nil {
 		s.created = map[string]struct{}{}
 	}
 	s.created[fName] = struct{}{}
-	var err error
-	s.file, err = os.Create(fName)
+
+	file, err := os.Create(fName)
 	if err != nil {
 		return err
 	}
+	s.setFile(file)
 
-	fmt.Fprintln(s.file, s.headers.String())
+	fmt.Fprintln(s.out, s.headers.String())
+
 	return nil
 }
 
 func (s *Scanner) writeLine() {
-	fmt.Fprint(s.file, s.line, "\r\n")
+	fmt.Fprint(s.out, s.line, "\r\n")
 }
 
 func (s *Scanner) Scan() bool {
@@ -134,7 +154,8 @@ func (s *Scanner) scanTableName() {
 	s.table = s.line[strings.IndexByte(s.line, '`')+1 : strings.LastIndexByte(s.line, '`')]
 	s.ignore = (s.cfg.include != nil && !slices.Contains(s.cfg.include, s.table)) || slices.Contains(s.cfg.exclude, s.table) ||
 		(s.typ == "data" && s.cfg.mode == "schema") ||
-		(s.typ == "schema" && s.cfg.mode == "data")
+		(s.typ == "schema" && s.cfg.mode == "data") ||
+		(s.typ == "data" && slices.Contains(s.cfg.excludeData, s.table))
 }
 
 func (s *Scanner) isViewStart() bool {
@@ -199,8 +220,8 @@ func (s *Scanner) start() error {
 		}
 	}
 
-	if s.file != nil {
-		s.file.Close()
+	if s.out != nil {
+		s.outClose()
 	}
 
 	if err := s.rdr.Err(); err != nil {
@@ -257,8 +278,11 @@ func main() {
 	cmd.Flags().StringVarP(&s.cfg.outfile, "outfile", "f", "", "Single file to output to. Pass - for stdout.")
 	cmd.Flags().StringVarP(&s.cfg.outdir, "outdir", "d", "", "Directory to output files to.")
 	cmd.Flags().BoolVarP(&s.cfg.verbose, "verbose", "v", false, "Output more info.")
+	cmd.Flags().BoolVarP(&s.cfg.compress, "compress", "c", false, "Compress output.")
 	cmd.Flags().StringSliceVarP(&s.cfg.include, "include", "i", nil, "Tables to include.")
 	cmd.Flags().StringSliceVarP(&s.cfg.exclude, "exclude", "e", nil, "Tables to exclude.")
+
+	cmd.Flags().StringSliceVar(&s.cfg.excludeData, "exclude-data", nil, "Exclude data for these tables.")
 
 	cmd.Flags().StringVarP(&s.cfg.mode, "mode", "m", "both", "Output mode: data/schema/both")
 

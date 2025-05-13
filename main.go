@@ -184,6 +184,9 @@ func (s *Scanner) isDataStart() bool {
 
 func (s *Scanner) start() error {
 	for s.Next() {
+		if strings.HasPrefix(s.line, "/*M!") {
+			continue
+		}
 		if !strings.HasPrefix(s.line, "/*!") {
 			s.skip = true
 			break
@@ -216,6 +219,9 @@ func (s *Scanner) start() error {
 		}
 
 		if !s.ignore {
+			if s.out == nil {
+				return fmt.Errorf("could not process headers: " + s.line)
+			}
 			s.writeLine()
 		}
 	}
